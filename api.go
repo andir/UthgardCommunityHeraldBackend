@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/andir/UthgardCommunityHeraldBackend/timeseries"
 	"github.com/gorilla/mux"
@@ -20,21 +21,43 @@ func min(a, b int) int {
 	}
 }
 
-// ---
+type APIFunction func(wr http.ResponseWriter, req *http.Request) (response, err interface{})
 
-func characterEndpoint(wr http.ResponseWriter, req *http.Request) {
-	vars := mux.Vars(req)
-	characterName := strings.ToLower(vars["characterName"])
-	char, ok := statistics.Characters[characterName]
-	if !ok {
-		return // TODO error
-	}
-	json.NewEncoder(wr).Encode(char)
+func apiEndpointWrapper(fun APIFunction) http.HandlerFunc {
+	return http.HandlerFunc(func(wr http.ResponseWriter, req *http.Request) {
+		response, error := fun(wr, req)
+		wr.Header().Set("Content-Type", "application/json; encoding=utf-8")
+		if error != nil {
+			log.Println(error)
+			wr.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(wr).Encode(struct {
+				Error string
+			}{
+				Error: "Well this didn't end up as expected :(",
+			})
+		} else {
+			wr.Header().Set("Cache-Control", "max-age=600")
+			wr.WriteHeader(http.StatusOK)
+			json.NewEncoder(wr).Encode(response)
+		}
+	})
 }
 
 // ---
 
-func topRP(wr http.ResponseWriter, query *Query) { //players CharactersByRP) {
+func characterEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	vars := mux.Vars(req)
+	characterName := strings.ToLower(vars["characterName"])
+	char, ok := statistics.Characters[characterName]
+	if !ok {
+		return nil, "unknown character" // TODO error
+	}
+	return char, nil
+}
+
+// ---
+
+func topRP(wr http.ResponseWriter, query *Query) (interface{}, interface{}) { //players CharactersByRP) {
 	type TopRPPLayer struct {
 		Name  string
 		Guild string
@@ -51,10 +74,10 @@ func topRP(wr http.ResponseWriter, query *Query) { //players CharactersByRP) {
 		}
 	}
 
-	json.NewEncoder(wr).Encode(&jplayers)
+	return &jplayers, nil
 }
 
-func topXP(wr http.ResponseWriter, query *Query) {
+func topXP(wr http.ResponseWriter, query *Query) (interface{}, interface{}) {
 	type TopXPPLayer struct {
 		Name  string
 		Guild string
@@ -71,170 +94,264 @@ func topXP(wr http.ResponseWriter, query *Query) {
 		}
 	}
 
-	json.NewEncoder(wr).Encode(&jplayers)
+	return &jplayers, nil
 }
 
-func univeralTopRPEndpoint(wr http.ResponseWriter, req *http.Request, key string, index map[string]Query) {
+func univeralTopRPEndpoint(wr http.ResponseWriter, req *http.Request, key string, index map[string]*Query) (interface{}, interface{}) {
 	vars := mux.Vars(req)
 	val := vars[key]
 	stats, ok := index[val]
 	if ok {
-		topRP(wr, &stats)
+		return topRP(wr, stats)
 	}
+
+	return nil, key + " not found"
 
 }
 
-func universalTopXPEndpoint(wr http.ResponseWriter, req *http.Request, key string, index map[string]Query) {
+func universalTopXPEndpoint(wr http.ResponseWriter, req *http.Request, key string, index map[string]*Query) (interface{}, interface{}) {
 	vars := mux.Vars(req)
 	val := vars[key]
 	stats, ok := index[val]
 	if ok {
-		topXP(wr, &stats)
+		return topXP(wr, stats)
 	}
-}
-
-func topRPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	topRP(wr, &statistics.Query)
-}
-
-func topXPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	topXP(wr, &statistics.Query)
-}
-
-func totalRPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	json.NewEncoder(wr).Encode(statistics.TotalRP)
-}
-
-func totalXPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	json.NewEncoder(wr).Encode(statistics.TotalXP)
+	return nil, key + "not found"
 }
 
 // ---
 
-func topRPGuildsEndpoint(wr http.ResponseWriter, req *http.Request) {
+func topLWRPCharactersEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return statistics.LWRPCharacters[:MAX_RESULTS], nil
+}
+func topLWXPCharactersEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return statistics.LWXPCharacters[:MAX_RESULTS], nil
+}
+func topLWRPGuildsEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return statistics.LWRPGuilds[:MAX_RESULTS], nil
+}
+func topLWXPGuildsEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return statistics.LWXPGuilds[:MAX_RESULTS], nil
+}
+
+// ---
+
+func topRPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return topRP(wr, &statistics.Query)
+}
+
+func topXPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return topXP(wr, &statistics.Query)
+}
+
+func totalRPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return statistics.TotalRP, nil
+}
+
+func totalXPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return statistics.TotalXP, nil
+}
+
+// ---
+
+func topRPGuildsEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
 	n := min(len(statistics.TopRPGuilds), MAX_RESULTS)
-	json.NewEncoder(wr).Encode(statistics.TopRPGuilds[:n])
+	return statistics.TopRPGuilds[:n], nil
 }
 
-func topXPGuildsEndpoint(wr http.ResponseWriter, req *http.Request) {
+func topXPGuildsEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
 	n := min(len(statistics.TopXPGuilds), MAX_RESULTS)
-	json.NewEncoder(wr).Encode(statistics.TopXPGuilds[:n])
+	return statistics.TopXPGuilds[:n], nil
 }
 
 // ---
 
-func totalClassRPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	vars := mux.Vars(req)
-	className := vars["className"]
-	stats := statistics.ByClass[className]
-
-	json.NewEncoder(wr).Encode(stats.TotalRP)
+func totalClassRPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return univeralTopRPEndpoint(wr, req, "className", statistics.ByClass)
 }
 
-func totalClassXPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	vars := mux.Vars(req)
-	className := vars["className"]
-	stats := statistics.ByClass[className]
-
-	json.NewEncoder(wr).Encode(stats.TotalXP)
+func totalClassXPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return universalTopXPEndpoint(wr, req, "className", statistics.ByClass)
 }
 
-func topClassXPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	universalTopXPEndpoint(wr, req, "className", statistics.ByClass)
+func topClassXPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return universalTopXPEndpoint(wr, req, "className", statistics.ByClass)
 }
 
-func topClassRPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	univeralTopRPEndpoint(wr, req, "className", statistics.ByClass)
+func topClassRPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return univeralTopRPEndpoint(wr, req, "className", statistics.ByClass)
 }
 
 // ---
 
-func totalRealmRPEndpoint(wr http.ResponseWriter, req *http.Request) {
+func totalRealmRPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	vars := mux.Vars(req)
+	realmName := vars["realmName"]
+	stats := statistics.ByRealm[realmName]
+	return stats.TotalRP, nil
+}
+
+func totalRealmXPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
 	vars := mux.Vars(req)
 	realmName := vars["realmName"]
 	stats := statistics.ByRealm[realmName]
 
-	json.NewEncoder(wr).Encode(stats.TotalRP)
+	return stats.TotalXP, nil
 }
 
-func totalRealmXPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	vars := mux.Vars(req)
-	realmName := vars["realmName"]
-	stats := statistics.ByRealm[realmName]
-
-	json.NewEncoder(wr).Encode(stats.TotalXP)
+func topRealmXPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return universalTopXPEndpoint(wr, req, "realmName", statistics.ByRealm)
 }
 
-func topRealmXPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	universalTopXPEndpoint(wr, req, "realmName", statistics.ByRealm)
-}
-
-func topRealmRPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	univeralTopRPEndpoint(wr, req, "realmName", statistics.ByRealm)
+func topRealmRPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return univeralTopRPEndpoint(wr, req, "realmName", statistics.ByRealm)
 }
 
 // ---
 
-func totalGuildRPEndpoint(wr http.ResponseWriter, req *http.Request) {
+func totalGuildRPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
 	vars := mux.Vars(req)
 	guildName := vars["guildName"]
 	stats := statistics.ByGuild[guildName]
 
-	json.NewEncoder(wr).Encode(stats.TotalRP)
+	return stats.TotalRP, nil
 }
 
-func totalGuildXPEndpoint(wr http.ResponseWriter, req *http.Request) {
+func totalGuildXPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
 	vars := mux.Vars(req)
 	guildName := vars["guildName"]
 	stats := statistics.ByGuild[guildName]
 
-	json.NewEncoder(wr).Encode(stats.TotalXP)
+	return stats.TotalXP, nil
 }
 
-func topGuildXPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	universalTopXPEndpoint(wr, req, "guildName", statistics.ByRealm)
+func topGuildXPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return universalTopXPEndpoint(wr, req, "guildName", statistics.ByRealm)
 }
 
-func topGuildRPEndpoint(wr http.ResponseWriter, req *http.Request) {
-	univeralTopRPEndpoint(wr, req, "guildName", statistics.ByGuild)
+func topGuildRPEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return univeralTopRPEndpoint(wr, req, "guildName", statistics.ByGuild)
 }
 
 type TSGetter func(key string) *timeseries.TimeSeries
 
-func timeSeriesRenderer(key string, getter TSGetter, wr http.ResponseWriter) {
-	ts := getter(key)
+func timeSeriesRenderer(req *http.Request, key string, getter TSGetter, wr http.ResponseWriter) (interface{}, interface{}) {
+	val := mux.Vars(req)[key]
+	ts := getter(val)
 	if ts == nil {
-		return // FIXME: return proper error
+		return nil, "unknown timeseries" // FIXME: return proper error
 	}
-	bytes, err := ts.Serialize()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	wr.Write(bytes)
+
+	return ts, nil
 }
 
-func guildRPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) {
-	timeSeriesRenderer(mux.Vars(req)["guildName"], timeseries.GuildRPTimeSeries, wr)
+func timeSeriesValueSince(getter TSGetter, key string, since time.Duration) APIFunction {
+	return func(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+		val := mux.Vars(req)[key]
+		ts := getter(val)
+
+		timestamp := time.Now().Add(-1 * since)
+
+		return ts.ValueSince(timestamp), nil
+	}
 }
-func guildXPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) {
-	timeSeriesRenderer(mux.Vars(req)["guildName"], timeseries.GuildXPTimeSeries, wr)
+
+func guildRPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "guildName", timeseries.GuildRPTimeSeries, wr)
 }
-func realmRPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) {
-	timeSeriesRenderer(mux.Vars(req)["realmName"], timeseries.RealmRPTimeSeries, wr)
+func guildXPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "guildName", timeseries.GuildXPTimeSeries, wr)
 }
-func realmXPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) {
-	timeSeriesRenderer(mux.Vars(req)["realmName"], timeseries.RealmXPTimeSeries, wr)
+func realmRPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "realmName", timeseries.RealmRPTimeSeries, wr)
 }
-func classRPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) {
-	timeSeriesRenderer(mux.Vars(req)["className"], timeseries.ClassRPTimeSeries, wr)
+func realmXPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "realmName", timeseries.RealmXPTimeSeries, wr)
 }
-func classXPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) {
-	timeSeriesRenderer(mux.Vars(req)["className"], timeseries.ClassXPTimeSeries, wr)
+func classRPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "className", timeseries.ClassRPTimeSeries, wr)
 }
-func characterRPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) {
-	timeSeriesRenderer(mux.Vars(req)["characterName"], timeseries.CharacterRPTimeSeries, wr)
+func classXPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "className", timeseries.ClassXPTimeSeries, wr)
 }
-func characterXPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) {
-	timeSeriesRenderer(mux.Vars(req)["characterName"], timeseries.CharacterXPTimeSeries, wr)
+func characterRPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "characterName", timeseries.CharacterRPTimeSeries, wr)
+}
+func characterXPHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "characterName", timeseries.CharacterXPTimeSeries, wr)
+}
+func guildCountHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "guildName", timeseries.GuildCountTimeSeries, wr)
+}
+func realmCountHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "realmName", timeseries.RealmCountTimeSeries, wr)
+}
+func classCountHistoryEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	return timeSeriesRenderer(req, "className", timeseries.ClassCountTimeSeries, wr)
+}
+
+func characterRPSinceEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	characterName := mux.Vars(req)["characterName"]
+	ts := timeseries.CharacterRPTimeSeries(characterName)
+
+	if ts == nil {
+		return nil, "time series not found"
+	}
+	return ts.ValueSince(time.Date(2017, time.March, 01, 00, 00, 00, 00, time.UTC)), nil
+}
+
+// ---
+
+func searchCharacterEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	vars := mux.Vars(req)
+	characterName := strings.ToLower(vars["characterName"])
+
+	characters := make([]*Character, 0)
+	n := 0
+	characterTree.WalkPrefix(characterName, func(name string, value interface{}) bool {
+		if character, ok := value.(*Character); ok {
+			characters = append(characters, character)
+		}
+		n += 1
+		if n > MAX_RESULTS {
+			return true
+		}
+		return false
+	})
+
+	return characters, nil
+}
+
+func searchGuildEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	vars := mux.Vars(req)
+	guildName := strings.ToLower(vars["guildName"])
+
+	log.Printf("guildname: %v", guildName)
+	guilds := make([]string, 0)
+	n := 0
+	guildTree.WalkPrefix(guildName, func(name string, value interface{}) bool {
+		if realName, ok := value.(string); ok {
+			guilds = append(guilds, realName)
+		}
+		n += 1
+		if n > MAX_RESULTS {
+			return true
+		}
+		return false
+	})
+	return guilds, nil
+}
+
+func guildEndpoint(wr http.ResponseWriter, req *http.Request) (interface{}, interface{}) {
+	vars := mux.Vars(req)
+	guildName, ok := vars["guildName"]
+	if !ok {
+		return nil, "missing guildName parameter"
+	}
+	guild, ok := statistics.ByGuild[guildName]
+	if !ok {
+		return nil, "guild not found"
+	}
+
+	return guild.Characters, nil
 }

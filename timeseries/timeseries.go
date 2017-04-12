@@ -36,7 +36,9 @@ func (t *TimeSeriesEntryArray) Len() int {
 }
 
 func (t *TimeSeries) Append(value uint64, timestamp time.Time) (changed bool) {
-
+	if t.Entries == nil {
+		t.Entries = make(TimeSeriesEntryArray, 0)
+	}
 	// scan for an entry with the same timestamp
 	l := len(t.Entries)
 	for i := range t.Entries {
@@ -96,6 +98,34 @@ func (t *TimeSeries) Compact() {
 
 		i += 1
 	}
+	t.Entries = series
+}
+
+func (t *TimeSeries) EntriesSince(date time.Time) []TimeSeriesEntry {
+	results := make([]TimeSeriesEntry, 0, 1024)
+
+	for _, e := range t.Entries {
+		if e.Timestamp.After(date) {
+			results = append(results, e)
+		}
+	}
+	return results
+}
+func (t *TimeSeries) ValueSince(date time.Time) int64 {
+	series := t.EntriesSince(date)
+	l := len(series)
+	if l == 0 {
+		return 0
+	} else if l == 1 {
+		return int64(series[0].Value)
+	} else {
+		first := series[0]
+		last := series[l-1]
+		if first.Timestamp.Before(last.Timestamp) {
+			return int64(last.Value) - int64(first.Value)
+		}
+		return int64(first.Value) - int64(last.Value)
+	}
 }
 
 func OpenOrCreateTimeseries(filename string) *TimeSeries {
@@ -105,13 +135,23 @@ func OpenOrCreateTimeseries(filename string) *TimeSeries {
 
 	series = &TimeSeries{}
 
-	if os.IsNotExist(err) {
-		series.Save(filename)
-	} else {
-		return OpenTimeSeries(filename)
+	var ts *TimeSeries = nil
+
+	if !os.IsNotExist(err) {
+		ts = OpenTimeSeries(filename)
+
+		if ts == nil {
+			log.Printf("%v seems to be corrupt. Purging.", filename)
+		}
 	}
 
-	return series
+	if ts == nil {
+		log.Printf("Creating new ts: %v", filename)
+		series.Save(filename)
+		ts = series
+	}
+
+	return ts
 }
 
 func OpenTimeSeries(filename string) *TimeSeries {
@@ -185,6 +225,10 @@ func TimeSeriesPath(queryType, metric, key string) string {
 
 func UpdateSeries(fn string, value uint64, timestamp time.Time) (err error) {
 	ts := OpenOrCreateTimeseries(fn)
+	if ts == nil {
+		log.Printf("Failed to create ts for: %v", fn)
+		return
+	}
 	changed := ts.Append(value, timestamp)
 	if changed {
 		err = ts.Save(fn)
@@ -222,4 +266,16 @@ func ClassXPTimeSeries(className string) *TimeSeries {
 
 func ClassRPTimeSeries(className string) *TimeSeries {
 	return OpenTimeSeries(TimeSeriesPath("class", className, "rp"))
+}
+
+func ClassCountTimeSeries(className string) *TimeSeries {
+	return OpenTimeSeries(TimeSeriesPath("class", className, "count"))
+}
+
+func GuildCountTimeSeries(guildName string) *TimeSeries {
+	return OpenTimeSeries(TimeSeriesPath("guild", guildName, "count"))
+}
+
+func RealmCountTimeSeries(realmName string) *TimeSeries {
+	return OpenTimeSeries(TimeSeriesPath("realm", realmName, "count"))
 }

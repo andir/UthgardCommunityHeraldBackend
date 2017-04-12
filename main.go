@@ -6,8 +6,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/andir/UthgardCommunityHeraldBackend/timeseries"
+	radix "github.com/armon/go-radix"
 	"github.com/gorilla/mux"
 )
 
@@ -33,6 +36,8 @@ func parseDump(filename string) map[string]Character {
 
 // FIXME: replace the global with a context var
 var statistics *Statistics
+var characterTree *radix.Tree
+var guildTree *radix.Tree
 
 func guildInfoEndpoint(wr http.ResponseWriter, req *http.Request) {
 	vars := mux.Vars(req)
@@ -79,66 +84,53 @@ func update() {
 		return
 	}
 
-	var charactersFromJSON map[string]Character
+	var characters map[string]*Character
 	bytes, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 
-	err = json.Unmarshal(bytes, &charactersFromJSON)
+	err = json.Unmarshal(bytes, &characters)
 
 	var lastUpdatedInt int64 = 0
 
-	characters := make(map[string]*Character)
-	for key, value := range charactersFromJSON {
+	for _, value := range characters {
 		if value.LastUpdated > lastUpdatedInt {
 			lastUpdatedInt = value.LastUpdated
 		}
-		c := &Character{}
-		*c = value
-		characters[key] = c
 	}
+	go func() {
+		ctree := radix.New()
+		for name, character := range characters {
+			ctree.Insert(strings.ToLower(name), character)
+		}
+		characterTree = ctree
+	}()
 
 	stats := LoadCharacters(characters)
+
+	go func() {
+		gtree := radix.New()
+		for name := range stats.ByGuild {
+			gtree.Insert(strings.ToLower(name), name)
+		}
+		guildTree = gtree
+	}()
+
 	lastUpdated := time.Unix(lastUpdatedInt, 0)
 	UpdateTimeseries(stats, lastUpdated)
 
-	statistics = stats
+	UpdateTopLWRP(stats)
 
+	statistics = stats
 }
 
 func main() {
-	//	filename := flag.String("filename", "", "Dump to parse")
-
-	//	flag.Parse()
-
-	//	if len(*filename) == 0 {
-	//		flag.Usage()
-	//		return
-	//	}
-
-	//charactersFromJSON := parseDump(*filename)
-	//var lastUpdatedInt int64 = 0
-
-	//characters := make(map[string]*Character)
-	//for key, value := range charactersFromJSON {
-	//	if value.LastUpdated > lastUpdatedInt {
-	//		lastUpdatedInt = value.LastUpdated
-	//	}
-	//	c := &Character{}
-	//	*c = value
-	//	characters[key] = c
-	//}
-
-	//statistics = LoadCharacters(characters)
-	//lastUpdated := time.Unix(lastUpdatedInt, 0)
-	//UpdateTimeseries(statistics, lastUpdated)
-
-	update()
 
 	go func() {
 		t := time.NewTicker(30 * time.Minute)
+		update()
 		for range t.C {
 			update()
 		}
@@ -150,57 +142,71 @@ func main() {
 
 	r := mux.NewRouter()
 
-	//	realm/<realm>/rp - sum
-	//	realm/<realm>/xp - sum
-	//	realm/<realm>/topxp - list
-	//	realm/<realm>/toprp - list
-	//
-	//	class
-	//	guild
-	//
-	//	/topxp
-	//	/toprp
-	//	/xp
-	//	/rp
+	endpoints := []struct {
+		Endpoint string
+		Func     APIFunction
+	}{
 
-	r.HandleFunc("/toprp", topRPEndpoint)
-	r.HandleFunc("/topxp", topXPEndpoint)
-	r.HandleFunc("/rp", totalRPEndpoint)
-	r.HandleFunc("/xp", totalXPEndpoint)
+		{"/toprp", topRPEndpoint},
+		{"/topxp", topXPEndpoint},
+		{"/rp", totalRPEndpoint},
+		{"/xp", totalXPEndpoint},
 
-	r.HandleFunc("/toprp/guilds", topRPGuildsEndpoint)
-	r.HandleFunc("/topxp/guilds", topXPGuildsEndpoint)
+		{"/toplwxp", topLWRPCharactersEndpoint},
+		{"/toplwrp", topLWXPCharactersEndpoint},
 
-	//r.HandleFunc("/toprp/classes", topRPClassesEndpoint)
-	//r.HandleFunc("/topxp/classes", topXPClassesEndpoint)
+		{"/toplwxp/guilds", topLWRPGuildsEndpoint},
+		{"/toplwrp/guilds", topLWXPGuildsEndpoint},
 
-	//r.HandleFunc("/toprp/realms", topRPRealmsEndpoint)
-	//r.HandleFunc("/topxp/realms", topXPRealmsEndpoint)
+		{"/toprp/guilds", topRPGuildsEndpoint},
+		{"/topxp/guilds", topXPGuildsEndpoint},
 
-	r.HandleFunc("/character/{characterName}", characterEndpoint)
-	r.HandleFunc("/character/{characterName}/history/rp", characterRPHistoryEndpoint)
-	r.HandleFunc("/character/{characterName}/history/xp", characterXPHistoryEndpoint)
+		{"/search/character/{characterName}", searchCharacterEndpoint},
+		{"/search/guild/{guildName}", searchGuildEndpoint},
 
-	r.HandleFunc("/class/{className}/rp", totalClassRPEndpoint)
-	r.HandleFunc("/class/{className}/xp", totalClassXPEndpoint)
-	r.HandleFunc("/class/{className}/toprp", topClassRPEndpoint)
-	r.HandleFunc("/class/{className}/topxp", topClassXPEndpoint)
-	r.HandleFunc("/class/{className}/history/rp", classRPHistoryEndpoint)
-	r.HandleFunc("/class/{className}/history/xp", classXPHistoryEndpoint)
+		{"/character/{characterName}", characterEndpoint},
+		{"/character/{characterName}/lastwrp", timeSeriesValueSince(timeseries.CharacterRPTimeSeries, "characterName", 7*24*time.Hour)},
+		{"/character/{characterName}/history/rp", characterRPHistoryEndpoint},
+		{"/character/{characterName}/history/xp", characterXPHistoryEndpoint},
 
-	r.HandleFunc("/realm/{realmName}/rp", totalRealmRPEndpoint)
-	r.HandleFunc("/realm/{realmName}/xp", totalRealmXPEndpoint)
-	r.HandleFunc("/realm/{realmName}/toprp", topRealmRPEndpoint)
-	r.HandleFunc("/realm/{realmName}/topxp", topRealmXPEndpoint)
-	r.HandleFunc("/realm/{realmName}/history/rp", realmRPHistoryEndpoint)
-	r.HandleFunc("/realm/{realmName}/history/xp", realmXPHistoryEndpoint)
+		{"/class/{className}/rp", totalClassRPEndpoint},
+		{"/class/{className}/xp", totalClassXPEndpoint},
+		{"/class/{className}/toprp", topClassRPEndpoint},
+		{"/class/{className}/topxp", topClassXPEndpoint},
+		{"/class/{className}/history/rp", classRPHistoryEndpoint},
+		{"/class/{className}/history/xp", classXPHistoryEndpoint},
+		{"/class/{className}/history/count", classCountHistoryEndpoint},
 
-	r.HandleFunc("/guild/{guildName}/rp", totalGuildRPEndpoint)
-	r.HandleFunc("/guild/{guildName}/xp", totalGuildXPEndpoint)
-	r.HandleFunc("/guild/{guildName}/toprp", topGuildRPEndpoint)
-	r.HandleFunc("/guild/{guildName}/topxp", topGuildXPEndpoint)
-	r.HandleFunc("/guild/{guildName}/history/rp", guildRPHistoryEndpoint)
-	r.HandleFunc("/guild/{guildName}/history/xp", guildXPHistoryEndpoint)
+		{"/realm/{realmName}/rp", totalRealmRPEndpoint},
+		{"/realm/{realmName}/xp", totalRealmXPEndpoint},
+		{"/realm/{realmName}/toprp", topRealmRPEndpoint},
+		{"/realm/{realmName}/topxp", topRealmXPEndpoint},
+		{"/realm/{realmName}/history/rp", realmRPHistoryEndpoint},
+		{"/realm/{realmName}/history/xp", realmXPHistoryEndpoint},
+		{"/realm/{realmName}/history/count", realmCountHistoryEndpoint},
 
+		{"/guild/{guildName}", guildEndpoint},
+		{"/guild/{guildName}/rp", totalGuildRPEndpoint},
+		{"/guild/{guildName}/xp", totalGuildXPEndpoint},
+		{"/guild/{guildName}/toprp", topGuildRPEndpoint},
+		{"/guild/{guildName}/topxp", topGuildXPEndpoint},
+		{"/guild/{guildName}/lastwrp", timeSeriesValueSince(timeseries.GuildRPTimeSeries, "guildName", 7*24*time.Hour)},
+		{"/guild/{guildName}/history/rp", guildRPHistoryEndpoint},
+		{"/guild/{guildName}/history/xp", guildXPHistoryEndpoint},
+		{"/guild/{guildName}/history/count", guildCountHistoryEndpoint},
+	}
+
+	documentation := ""
+
+	for _, endpoint := range endpoints {
+		log.Println(endpoint.Endpoint)
+		r.Handle(endpoint.Endpoint, apiEndpointWrapper(endpoint.Func))
+
+		documentation += endpoint.Endpoint + "\n"
+	}
+	r.Handle("/", http.HandlerFunc(func(wr http.ResponseWriter, req *http.Request) {
+		wr.Header().Set("Content-Type", "text/plain")
+		wr.Write([]byte(documentation))
+	}))
 	http.ListenAndServe("127.0.0.1:8081", r)
 }
